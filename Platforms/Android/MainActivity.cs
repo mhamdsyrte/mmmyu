@@ -29,7 +29,7 @@ public class MainActivity : MauiAppCompatActivity
                 try
                 {
                     var intent = new Intent(Settings.ActionManageAppAllFilesAccessPermission);
-                    intent.SetData(Uri.Parse($"package:{PackageName}"));
+                    intent.SetData(Android.Net.Uri.Parse($"package:{PackageName}"));
                     StartActivity(intent);
                 }
                 catch
