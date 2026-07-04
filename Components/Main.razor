@@ -1,0 +1,447 @@
+@inject FileService Files
+@inject ClipboardState Clipboard
+@inject IJSRuntime JS
+
+<div class="app-shell">
+
+    @* ---------- Top bar : terminal-style breadcrumb ---------- *@
+    <header class="topbar">
+        <button class="icon-btn" title="رجوع" disabled="@(currentPath is null)" @onclick="GoBack">
+            <span class="i">‹</span>
+        </button>
+
+        <div class="prompt" @onclick="() => currentPath = null">
+            <span class="prompt-sigil">~</span>
+            <span class="prompt-path">@(currentPath is null ? "الجذر" : ShortPath(currentPath))</span>
+            <span class="cursor"></span>
+        </div>
+
+        <button class="icon-btn" title="تحديد" @onclick="ToggleSelectionMode">
+            <span class="i">@(selectionMode ? "✕" : "☑")</span>
+        </button>
+    </header>
+
+    @* ---------- Toolbar ---------- *@
+    <div class="toolbar">
+        @if (!selectionMode)
+        {
+            <button class="chip" @onclick="() => showNewMenu = !showNewMenu">+ جديد</button>
+            <button class="chip @(Clipboard.HasContent ? "" : "chip-disabled")"
+                    disabled="@(!Clipboard.HasContent || currentPath is null)"
+                    @onclick="DoPaste">
+                لصق @(Clipboard.HasContent ? $"({Clipboard.Paths.Count})" : "")
+            </button>
+            @if (errorMessage is not null)
+            {
+                <span class="toolbar-error">@errorMessage</span>
+            }
+        }
+        else
+        {
+            <span class="selection-count">@selected.Count محدد</span>
+            <button class="chip" disabled="@(selected.Count == 0)" @onclick="() => StartClipboard(false)">نسخ</button>
+            <button class="chip" disabled="@(selected.Count == 0)" @onclick="() => StartClipboard(true)">قص</button>
+            <button class="chip chip-danger" disabled="@(selected.Count == 0)" @onclick="DeleteSelected">حذف</button>
+        }
+    </div>
+
+    @if (showNewMenu)
+    {
+        <div class="new-menu">
+            <button @onclick="OpenNewFolderDialog">📁 مجلد جديد</button>
+            <button @onclick="OpenNewFileDialog">📄 ملف نصي جديد</button>
+        </div>
+    }
+
+    @* ---------- File list ---------- *@
+    <main class="list">
+        @if (currentPath is null)
+        {
+            @foreach (var root in roots)
+            {
+                <div class="row" @onclick="() => Navigate(root.FullPath)">
+                    <span class="row-icon folder-icon">▣</span>
+                    <div class="row-main">
+                        <span class="row-name">@root.Name</span>
+                        <span class="row-meta">@root.FullPath</span>
+                    </div>
+                </div>
+            }
+        }
+        else if (entries.Count == 0)
+        {
+            <div class="empty-state">
+                <div class="empty-mark">∅</div>
+                <p>المجلد فارغ</p>
+                <span>أنشئ ملفًا أو مجلدًا جديدًا من زر "+ جديد"</span>
+            </div>
+        }
+        else
+        {
+            @foreach (var entry in entries)
+            {
+                <div class="row @(selected.Contains(entry.FullPath) ? "row-selected" : "")"
+                     @onclick="() => OnRowTap(entry)">
+
+                    @if (selectionMode)
+                    {
+                        <span class="checkbox">@(selected.Contains(entry.FullPath) ? "✓" : "")</span>
+                    }
+                    else
+                    {
+                        <span class="row-icon @(entry.IsDirectory ? "folder-icon" : "file-icon")">
+                            @(entry.IsDirectory ? "▣" : "▤")
+                        </span>
+                    }
+
+                    <div class="row-main">
+                        <span class="row-name">@entry.Name</span>
+                        <span class="row-meta">
+                            @(entry.IsDirectory ? "مجلد" : FileService.FormatSize(entry.SizeBytes))
+                            · @entry.Modified.ToString("yyyy-MM-dd HH:mm")
+                        </span>
+                    </div>
+
+                    @if (!selectionMode)
+                    {
+                        <button class="kebab" @onclick="() => OpenContextSheet(entry)" @onclick:stopPropagation="true">⋮</button>
+                    }
+                </div>
+            }
+        }
+    </main>
+
+    @* ---------- FAB ---------- *@
+    @if (!selectionMode)
+    {
+        <button class="fab" @onclick="() => showNewMenu = !showNewMenu">+</button>
+    }
+
+    @* ---------- Context bottom sheet ---------- *@
+    @if (contextEntry is not null)
+    {
+        <div class="sheet-backdrop" @onclick="CloseContextSheet">
+            <div class="sheet" @onclick:stopPropagation="true">
+                <div class="sheet-title">@contextEntry.Name</div>
+                @if (!contextEntry.IsDirectory && FileService.LooksLikeText(contextEntry.Name))
+                {
+                    <button @onclick="() => OpenEditor(contextEntry!)">✎ فتح في المحرر</button>
+                }
+                <button @onclick="() => { StartClipboard(false, contextEntry!.FullPath); CloseContextSheet(); }">⧉ نسخ</button>
+                <button @onclick="() => { StartClipboard(true, contextEntry!.FullPath); CloseContextSheet(); }">✂ قص</button>
+                <button @onclick="() => OpenRenameDialog(contextEntry!)">✏ إعادة تسمية</button>
+                <button class="sheet-danger" @onclick="() => DeleteEntry(contextEntry!)">🗑 حذف</button>
+            </div>
+        </div>
+    }
+
+    @* ---------- Rename dialog ---------- *@
+    @if (renameTarget is not null)
+    {
+        <div class="modal-backdrop">
+            <div class="modal">
+                <h3>إعادة تسمية</h3>
+                <input @bind="renameValue" @bind:event="oninput" />
+                <div class="modal-actions">
+                    <button class="btn-ghost" @onclick="() => renameTarget = null">إلغاء</button>
+                    <button class="btn-primary" @onclick="ConfirmRename">حفظ</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ---------- New folder dialog ---------- *@
+    @if (showNewFolderDialog)
+    {
+        <div class="modal-backdrop">
+            <div class="modal">
+                <h3>مجلد جديد</h3>
+                <input @bind="newItemName" @bind:event="oninput" placeholder="اسم المجلد" />
+                <div class="modal-actions">
+                    <button class="btn-ghost" @onclick="() => showNewFolderDialog = false">إلغاء</button>
+                    <button class="btn-primary" @onclick="ConfirmNewFolder">إنشاء</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ---------- New file dialog ---------- *@
+    @if (showNewFileDialog)
+    {
+        <div class="modal-backdrop">
+            <div class="modal">
+                <h3>ملف نصي جديد</h3>
+                <input @bind="newItemName" @bind:event="oninput" placeholder="اسم الملف (مثال: ملاحظة.txt)" />
+                <div class="modal-actions">
+                    <button class="btn-ghost" @onclick="() => showNewFileDialog = false">إلغاء</button>
+                    <button class="btn-primary" @onclick="ConfirmNewFile">إنشاء</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ---------- Text editor overlay ---------- *@
+    @if (editingFile is not null)
+    {
+        <div class="editor-overlay">
+            <header class="editor-bar">
+                <button class="icon-btn" @onclick="CloseEditor">‹</button>
+                <span class="editor-name">
+                    @Path.GetFileName(editingFile)
+                    @if (editorDirty) { <span class="dirty-dot"></span> }
+                </span>
+                <button class="btn-primary editor-save" @onclick="SaveEditor">حفظ</button>
+            </header>
+            <textarea class="editor-area" value="@editorContent" @oninput="OnEditorInput" spellcheck="false"></textarea>
+        </div>
+    }
+
+    @* ---------- Toast ---------- *@
+    @if (toast is not null)
+    {
+        <div class="toast">@toast</div>
+    }
+
+</div>
+
+@code {
+    List<FileEntry> roots = new();
+    List<FileEntry> entries = new();
+    string? currentPath = null;
+    string? errorMessage;
+
+    bool selectionMode = false;
+    HashSet<string> selected = new();
+
+    bool showNewMenu = false;
+    bool showNewFolderDialog = false;
+    bool showNewFileDialog = false;
+    string newItemName = "";
+
+    FileEntry? contextEntry;
+    FileEntry? renameTarget;
+    string renameValue = "";
+
+    string? editingFile;
+    string editorContent = "";
+    bool editorDirty = false;
+
+    string? toast;
+
+    protected override void OnInitialized()
+    {
+        roots = Files.GetRoots();
+    }
+
+    string ShortPath(string path)
+    {
+        // Show path relative to the internal storage root for readability.
+        const string prefix = "/storage/emulated/0";
+        return path.StartsWith(prefix) ? "~" + path[prefix.Length..] : path;
+    }
+
+    void Navigate(string path)
+    {
+        currentPath = path;
+        Reload();
+    }
+
+    void GoBack()
+    {
+        if (currentPath is null) return;
+        var parent = Directory.GetParent(currentPath)?.FullName;
+        if (parent is null || parent == "/storage" || parent == "/")
+        {
+            currentPath = null;
+        }
+        else
+        {
+            currentPath = parent;
+            Reload();
+        }
+    }
+
+    void Reload()
+    {
+        if (currentPath is null) return;
+        var (list, err) = Files.ListEntries(currentPath);
+        entries = list;
+        errorMessage = err;
+    }
+
+    void OnRowTap(FileEntry entry)
+    {
+        if (selectionMode)
+        {
+            if (!selected.Add(entry.FullPath))
+                selected.Remove(entry.FullPath);
+            return;
+        }
+
+        if (entry.IsDirectory)
+        {
+            Navigate(entry.FullPath);
+        }
+        else if (FileService.LooksLikeText(entry.Name))
+        {
+            OpenEditor(entry);
+        }
+        else
+        {
+            ShowToast("لا يمكن معاينة هذا النوع من الملفات");
+        }
+    }
+
+    void ToggleSelectionMode()
+    {
+        selectionMode = !selectionMode;
+        selected.Clear();
+    }
+
+    void OpenContextSheet(FileEntry entry) => contextEntry = entry;
+    void CloseContextSheet() => contextEntry = null;
+
+    void StartClipboard(bool cut, string? singlePath = null)
+    {
+        var paths = singlePath is not null ? new List<string> { singlePath } : selected.ToList();
+        if (paths.Count == 0) return;
+
+        if (cut) Clipboard.SetCut(paths);
+        else Clipboard.SetCopy(paths);
+
+        ShowToast(cut ? "تم القص" : "تم النسخ");
+        if (selectionMode) { selectionMode = false; selected.Clear(); }
+    }
+
+    async Task DoPaste()
+    {
+        if (currentPath is null || !Clipboard.HasContent) return;
+        var err = Files.PasteInto(Clipboard.Paths, currentPath, Clipboard.IsCut);
+        if (err is not null) { ShowToast(err); return; }
+        Clipboard.Clear();
+        Reload();
+        ShowToast("تم اللصق");
+        await Task.CompletedTask;
+    }
+
+    void OpenRenameDialog(FileEntry entry)
+    {
+        renameTarget = entry;
+        renameValue = entry.Name;
+        contextEntry = null;
+    }
+
+    void ConfirmRename()
+    {
+        if (renameTarget is null || string.IsNullOrWhiteSpace(renameValue)) return;
+        var err = Files.Rename(renameTarget, renameValue.Trim());
+        renameTarget = null;
+        if (err is not null) { ShowToast(err); return; }
+        Reload();
+        ShowToast("تمت إعادة التسمية");
+    }
+
+    async Task DeleteEntry(FileEntry entry)
+    {
+        contextEntry = null;
+        var confirmed = await JS.InvokeAsync<bool>("confirm", $"حذف \"{entry.Name}\" نهائيًا؟");
+        if (!confirmed) return;
+
+        var err = Files.Delete(entry);
+        if (err is not null) { ShowToast(err); return; }
+        Reload();
+        ShowToast("تم الحذف");
+    }
+
+    async Task DeleteSelected()
+    {
+        var confirmed = await JS.InvokeAsync<bool>("confirm", $"حذف {selected.Count} عنصر نهائيًا؟");
+        if (!confirmed) return;
+
+        foreach (var path in selected.ToList())
+        {
+            var entry = entries.FirstOrDefault(e => e.FullPath == path);
+            if (entry is not null) Files.Delete(entry);
+        }
+        selectionMode = false;
+        selected.Clear();
+        Reload();
+        ShowToast("تم الحذف");
+    }
+
+    void OpenNewFolderDialog()
+    {
+        showNewMenu = false;
+        newItemName = "";
+        showNewFolderDialog = true;
+    }
+
+    void OpenNewFileDialog()
+    {
+        showNewMenu = false;
+        newItemName = "";
+        showNewFileDialog = true;
+    }
+
+    void ConfirmNewFolder()
+    {
+        if (currentPath is null || string.IsNullOrWhiteSpace(newItemName)) return;
+        var err = Files.CreateFolder(currentPath, newItemName.Trim());
+        showNewFolderDialog = false;
+        if (err is not null) { ShowToast(err); return; }
+        Reload();
+    }
+
+    void ConfirmNewFile()
+    {
+        if (currentPath is null || string.IsNullOrWhiteSpace(newItemName)) return;
+        var err = Files.CreateTextFile(currentPath, newItemName.Trim());
+        showNewFileDialog = false;
+        if (err is not null) { ShowToast(err); return; }
+        Reload();
+    }
+
+    void OpenEditor(FileEntry entry)
+    {
+        contextEntry = null;
+        var (content, err) = Files.ReadText(entry.FullPath);
+        if (err is not null) { ShowToast(err); return; }
+        editingFile = entry.FullPath;
+        editorContent = content;
+        editorDirty = false;
+    }
+
+    async Task CloseEditor()
+    {
+        if (editorDirty)
+        {
+            var discard = await JS.InvokeAsync<bool>("confirm", "لديك تغييرات غير محفوظة. إغلاق بدون حفظ؟");
+            if (!discard) return;
+        }
+        editingFile = null;
+    }
+
+    void OnEditorInput(ChangeEventArgs e)
+    {
+        editorContent = e.Value?.ToString() ?? "";
+        editorDirty = true;
+    }
+
+    void SaveEditor()
+    {
+        if (editingFile is null) return;
+        var err = Files.WriteText(editingFile, editorContent);
+        if (err is not null) { ShowToast(err); return; }
+        editorDirty = false;
+        ShowToast("تم الحفظ");
+    }
+
+    async void ShowToast(string message)
+    {
+        toast = message;
+        StateHasChanged();
+        await Task.Delay(2200);
+        toast = null;
+        StateHasChanged();
+    }
+}

@@ -1,0 +1,42 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install MAUI Android workload
+        run: dotnet workload install maui-android
+
+      - name: Restore
+        run: dotnet restore FileManagerPro.csproj
+
+      - name: Build APK (Release)
+        run: dotnet publish FileManagerPro.csproj -f net8.0-android -c Release
+
+      - name: Locate APK
+        id: find_apk
+        shell: pwsh
+        run: |
+          $apk = Get-ChildItem -Path . -Recurse -Filter *-Signed.apk | Select-Object -First 1
+          if (-not $apk) { $apk = Get-ChildItem -Path . -Recurse -Filter *.apk | Select-Object -First 1 }
+          Copy-Item $apk.FullName "FileManagerPro.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FileManagerPro-apk
+          path: FileManagerPro.apk
