@@ -14,7 +14,7 @@
     <ApplicationVersion>1</ApplicationVersion>
     <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
 
-    <SupportedOSPlatformVersion Condition="'$(TargetPlatformIdentifier)'=='android'">24.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion>24.0</SupportedOSPlatformVersion>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
   </PropertyGroup>
 
